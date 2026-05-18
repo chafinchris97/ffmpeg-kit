@@ -61,6 +61,8 @@
 #include "libavutil/imgutils.h"
 #include "libavutil/samplefmt.h"
 
+#include "libavcodec/packet.h"
+
 // FIXME: YUV420P etc. are actually supported with full color range,
 // yet the latter information isn't available here.
 static const enum AVPixelFormat *get_compliance_normal_pix_fmts(const AVCodec *codec, const enum AVPixelFormat default_formats[])
@@ -952,8 +954,12 @@ static int configure_input_video_filter(FilterGraph *fg, InputFilter *ifilter,
         int32_t *displaymatrix = ifilter->displaymatrix;
         double theta;
 
-        if (!displaymatrix)
-            displaymatrix = (int32_t *)av_stream_get_side_data(ist->st, AV_PKT_DATA_DISPLAYMATRIX, NULL);
+        if (!displaymatrix) {
+            const AVPacketSideData *sd = av_packet_side_data_get(ist->par->coded_side_data,
+                                                                 ist->par->nb_coded_side_data,
+                                                                 AV_PKT_DATA_DISPLAYMATRIX);
+            displaymatrix = sd ? (int32_t *)sd->data : NULL;
+        }
         theta = get_rotation(displaymatrix);
 
         if (fabs(theta - 90) < 1.0) {

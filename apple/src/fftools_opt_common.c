@@ -314,8 +314,6 @@ static void print_codec(const AVCodec *c)
         av_log(NULL, AV_LOG_ERROR, "delay ");
     if (c->capabilities & AV_CODEC_CAP_SMALL_LAST_FRAME)
         av_log(NULL, AV_LOG_ERROR, "small ");
-    if (c->capabilities & AV_CODEC_CAP_SUBFRAMES)
-        av_log(NULL, AV_LOG_ERROR, "subframes ");
     if (c->capabilities & AV_CODEC_CAP_EXPERIMENTAL)
         av_log(NULL, AV_LOG_ERROR, "exp ");
     if (c->capabilities & AV_CODEC_CAP_CHANNEL_CONF)
@@ -825,9 +823,8 @@ int show_filters(void *optctx, const char *opt, const char *arg)
     const AVFilterPad *pad;
 
     av_log(NULL, AV_LOG_ERROR, "Filters:\n"
-           "  T.. = Timeline support\n"
-           "  .S. = Slice threading\n"
-           "  ..C = Command support\n"
+           "  T. = Timeline support\n"
+           "  .S = Slice threading\n"
            "  A = Audio input/output\n"
            "  V = Video input/output\n"
            "  N = Dynamic number and/or type of input/output\n"
@@ -852,10 +849,9 @@ int show_filters(void *optctx, const char *opt, const char *arg)
                                   ( i && (filter->flags & AVFILTER_FLAG_DYNAMIC_OUTPUTS))) ? 'N' : '|';
         }
         *descr_cur = 0;
-        av_log(NULL, AV_LOG_ERROR, " %c%c%c %-17s %-10s %s\n",
+        av_log(NULL, AV_LOG_ERROR, " %c%c %-17s %-10s %s\n",
                filter->flags & AVFILTER_FLAG_SUPPORT_TIMELINE ? 'T' : '.',
                filter->flags & AVFILTER_FLAG_SLICE_THREADS    ? 'S' : '.',
-               filter->process_command                        ? 'C' : '.',
                filter->name, descr, filter->description);
     }
 #else
