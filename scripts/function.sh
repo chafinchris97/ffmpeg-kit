@@ -2103,6 +2103,54 @@ download() {
 }
 
 #
+# Apply ffmpeg-kit patches to the FFmpeg source tree under src/ffmpeg.
+#
+apply_ffmpeg_source_patches() {
+  local LIB_LOCAL_PATH="${BASEDIR}/src/ffmpeg"
+  local PATCH_FILE="${BASEDIR}/patch/hls_segment.patch"
+  local RC
+
+  if [ ! -d "${LIB_LOCAL_PATH}" ]; then
+    echo -e "INFO: FFmpeg source not found at ${LIB_LOCAL_PATH}, skipping patches\n" 1>>"${BASEDIR}"/build.log 2>&1
+    return 0
+  fi
+
+  if [ ! -f "${PATCH_FILE}" ]; then
+    echo -e "WARNING: FFmpeg patch not found at ${PATCH_FILE}, skipping\n" 1>>"${BASEDIR}"/build.log 2>&1
+    return 0
+  fi
+
+  echo -e "DEBUG: Applying FFmpeg source patch hls_segment.patch\n" 1>>"${BASEDIR}"/build.log 2>&1
+
+  cd "${LIB_LOCAL_PATH}" 1>>"${BASEDIR}"/build.log 2>&1 || return 1
+
+  if git apply --reverse --check "${PATCH_FILE}" 1>>"${BASEDIR}"/build.log 2>&1; then
+    echo -e "DEBUG: FFmpeg patch hls_segment.patch already applied\n" 1>>"${BASEDIR}"/build.log 2>&1
+    cd "${BASEDIR}" 1>>"${BASEDIR}"/build.log 2>&1 || return 1
+    return 0
+  fi
+
+  if ! git apply --check "${PATCH_FILE}" 1>>"${BASEDIR}"/build.log 2>&1; then
+    cd "${BASEDIR}" 1>>"${BASEDIR}"/build.log 2>&1 || return 1
+    echo -e "ERROR: FFmpeg patch hls_segment.patch does not apply cleanly\n" 1>>"${BASEDIR}"/build.log 2>&1
+    return 1
+  fi
+
+  git apply "${PATCH_FILE}" 1>>"${BASEDIR}"/build.log 2>&1
+  RC=$?
+
+  cd "${BASEDIR}" 1>>"${BASEDIR}"/build.log 2>&1 || return 1
+
+  if [ ${RC} -ne 0 ]; then
+    echo -e "ERROR: Failed to apply FFmpeg patch hls_segment.patch\n" 1>>"${BASEDIR}"/build.log 2>&1
+    return 1
+  fi
+
+  echo -e "INFO: Applied FFmpeg patch hls_segment.patch\n" 1>>"${BASEDIR}"/build.log 2>&1
+  return 0
+}
+
+#
 # 1. library name
 #
 download_library_source() {
@@ -2113,6 +2161,7 @@ download_library_source() {
   local LIBRARY_RC=""
   local DOWNLOAD_RC=""
   local SOURCE_TYPE=""
+  local PATCH_RC
 
   echo -e "DEBUG: Downloading library source: $1\n" 1>>"${BASEDIR}"/build.log 2>&1
 
@@ -2124,6 +2173,9 @@ download_library_source() {
 
   if [ ${LIBRARY_RC} -eq 0 ]; then
     echo -e "INFO: $1 already downloaded. Source folder found at ${LIB_LOCAL_PATH}" 1>>"${BASEDIR}"/build.log 2>&1
+    if [ "${LIB_NAME}" == "ffmpeg" ]; then
+      apply_ffmpeg_source_patches || return 1
+    fi
     echo 0
     return
   fi
@@ -2139,6 +2191,14 @@ download_library_source() {
     echo ${DOWNLOAD_RC}
   else
     echo -e "\nINFO: $1 library downloaded" 1>>"${BASEDIR}"/build.log 2>&1
+    if [ "${LIB_NAME}" == "ffmpeg" ]; then
+      apply_ffmpeg_source_patches
+      PATCH_RC=$?
+      if [ ${PATCH_RC} -ne 0 ]; then
+        echo ${PATCH_RC}
+        return
+      fi
+    fi
     echo 0
   fi
 }

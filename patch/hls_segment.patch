@@ -1,0 +1,97 @@
+diff --git a/libavformat/hlsenc.c b/libavformat/hlsenc.c
+index 957b9a5ddd..caf20b6663 100644
+--- a/libavformat/hlsenc.c
++++ b/libavformat/hlsenc.c
+@@ -53,6 +53,9 @@
+ #include "mux.h"
+ #include "os_support.h"
+ #include "url.h"
++#if CONFIG_MP4_MUXER
++#include "movenc.h"
++#endif
+ 
+ typedef enum {
+     HLS_START_SEQUENCE_AS_START_NUMBER = 0,
+@@ -2491,6 +2494,18 @@ static int hls_write_packet(AVFormatContext *s, AVPacket *pkt)
+         int byterange_mode = (hls->flags & HLS_SINGLE_FILE) || (hls->max_seg_size > 0);
+         double cur_duration;
+ 
++#if CONFIG_MP4_MUXER
++        if (hls->segment_type == SEGMENT_TYPE_FMP4 && is_ref_pkt) {
++            AVStream *out_st = oc->streams[stream_index];
++            AVPacket cue = *pkt;
++            cue.stream_index = stream_index;
++            cue.pts = av_rescale_q(pkt->pts, st->time_base, out_st->time_base);
++            cue.dts = av_rescale_q(pkt->dts, st->time_base, out_st->time_base);
++            cue.duration = av_rescale_q(pkt->duration, st->time_base, out_st->time_base);
++            ff_mov_precue_fragment_flush(oc, &cue);
++        }
++#endif
++
+         av_write_frame(oc, NULL); /* Flush any buffered data */
+         new_start_pos = avio_tell(oc->pb);
+         vs->size = new_start_pos - vs->start_pos;
+diff --git a/libavformat/movenc.c b/libavformat/movenc.c
+index fe6b259561..6abc6ad63f 100644
+--- a/libavformat/movenc.c
++++ b/libavformat/movenc.c
+@@ -6750,6 +6750,46 @@ static int check_pkt(AVFormatContext *s, MOVTrack *trk, AVPacket *pkt)
+     return 0;
+ }
+ 
++void ff_mov_precue_fragment_flush(AVFormatContext *s, const AVPacket *next_pkt)
++{
++    MOVMuxContext *mov = s->priv_data;
++    MOVTrack *trk;
++    int64_t dts, pts;
++
++    if (!next_pkt || next_pkt->stream_index < 0 ||
++        next_pkt->stream_index >= s->nb_streams)
++        return;
++
++    if (!(mov->flags & FF_MOV_FLAG_FRAGMENT) ||
++        !(mov->flags & FF_MOV_FLAG_FRAG_CUSTOM))
++        return;
++
++    trk = s->streams[next_pkt->stream_index]->priv_data;
++    if (!trk || !trk->entry || trk->start_dts == AV_NOPTS_VALUE)
++        return;
++
++    dts = next_pkt->dts;
++    pts = next_pkt->pts;
++    if (dts == AV_NOPTS_VALUE)
++        return;
++
++    if (mov->flags & FF_MOV_FLAG_NEGATIVE_CTS_OFFSETS) {
++        if (trk->dts_shift == AV_NOPTS_VALUE && pts != AV_NOPTS_VALUE)
++            trk->dts_shift = pts - dts;
++        if (trk->dts_shift != AV_NOPTS_VALUE)
++            dts += trk->dts_shift;
++    }
++
++    /* Match the FRAG_KEYFRAME branch behavior in mov_write_single_packet():
++     * end the current fragment exactly at the next fragment's first-sample dts. */
++    trk->track_duration = dts - trk->start_dts;
++    if (pts != AV_NOPTS_VALUE)
++        trk->end_pts = pts;
++    else
++        trk->end_pts = dts;
++    trk->end_reliable = 1;
++}
++
+ int ff_mov_write_packet(AVFormatContext *s, AVPacket *pkt)
+ {
+     MOVMuxContext *mov = s->priv_data;
+diff --git a/libavformat/movenc.h b/libavformat/movenc.h
+index eb12551ee5..fca2937caa 100644
+--- a/libavformat/movenc.h
++++ b/libavformat/movenc.h
+@@ -294,6 +294,8 @@ typedef struct MOVMuxContext {
+ 
+ int ff_mov_write_packet(AVFormatContext *s, AVPacket *pkt);
+ 
++void ff_mov_precue_fragment_flush(AVFormatContext *s, const AVPacket *next_pkt);
++
+ int ff_mov_init_hinting(AVFormatContext *s, int index, int src_index);
+ int ff_mov_add_hinted_packet(AVFormatContext *s, AVPacket *pkt,
+                              int track_index, int sample,
