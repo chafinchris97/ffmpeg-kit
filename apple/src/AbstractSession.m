@@ -234,4 +234,20 @@ extern void addSessionToSessionHistory(id<Session> session);
     }
 }
 
+- (void)pause {
+    if (_state == SessionStateRunning) {
+        [FFmpegKit pause:_sessionId];
+    }
+}
+
+- (void)resume {
+    if (_state == SessionStateRunning) {
+        [FFmpegKit resume:_sessionId];
+    }
+}
+
+- (BOOL)isPaused {
+    return [FFmpegKit isPaused:_sessionId];
+}
+
 @end

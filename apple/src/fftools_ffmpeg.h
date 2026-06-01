@@ -173,6 +173,8 @@ typedef struct OptionsContext {
     int loop;
     int rate_emu;
     float readrate;
+    float readrate_catchup;
+    double readrate_initial_burst;
     int accurate_seek;
     int thread_queue_size;
     int input_sync_ref;
@@ -413,6 +415,12 @@ typedef struct InputStream {
     int64_t       next_dts;
     int64_t first_dts;       ///< dts of the first packet read for this stream (in AV_TIME_BASE units)
     int64_t       dts;       ///< dts of the last packet read for this stream (in AV_TIME_BASE units)
+    // latest wallclock time at which packet reading resumed after a stall - used for readrate
+    int64_t       resume_wc;
+    // timestamp of first packet sent after the latest stall - used for readrate
+    int64_t       resume_pts;
+    // measure of how far behind packet reading is against specified readrate
+    int64_t       lag;
 
     int64_t       next_pts;  ///< synthetic pts for the next decode frame (in AV_TIME_BASE units)
     int64_t       pts;       ///< current pts of the decoded frame  (in AV_TIME_BASE units)
@@ -908,5 +916,15 @@ extern const char * const opt_name_top_field_first[];
 
 void set_report_callback(void (*callback)(int, float, float, int64_t, double, double, double));
 void cancel_operation(long id);
+void pause_operation(long id);
+void resume_operation(long id);
+
+extern __thread long globalSessionId;
+extern void cancelSession(long sessionId);
+extern int cancelRequested(long sessionId);
+extern void pauseSession(long sessionId);
+extern void resumeSession(long sessionId);
+extern int pauseRequested(long sessionId);
+extern void wait_if_paused(long sessionId);
 
 #endif /* FFTOOLS_FFMPEG_H */

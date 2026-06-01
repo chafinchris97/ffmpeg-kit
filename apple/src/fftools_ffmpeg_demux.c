@@ -43,6 +43,7 @@
 #include "libavutil/display.h"
 #include "libavutil/error.h"
 #include "libavutil/intreadwrite.h"
+#include "libavutil/log.h"
 #include "libavutil/opt.h"
 #include "libavutil/parseutils.h"
 #include "libavutil/pixdesc.h"
@@ -87,6 +88,11 @@ typedef struct Demuxer {
     int                   thread_queue_size;
     pthread_t             thread;
     int                   non_blocking;
+
+    int64_t               wallclock_start;
+    float                 readrate;
+    double                readrate_initial_burst;
+    float                 readrate_catchup;
 } Demuxer;
 
 typedef struct DemuxMsg {
@@ -270,6 +276,10 @@ static void *input_thread(void *arg)
     while (1) {
         DemuxMsg msg = { NULL };
 
+        wait_if_paused(globalSessionId);
+        if (cancelRequested(globalSessionId))
+            break;
+
         ret = av_read_frame(f->ctx, pkt);
 
         if (ret == AVERROR(EAGAIN)) {
@@ -424,6 +434,56 @@ fail:
     return ret;
 }
 
+static void readrate_sleep(Demuxer *d)
+{
+    InputFile *f = &d->f;
+    int64_t file_start = copy_ts * (
+                          (f->start_time_effective != AV_NOPTS_VALUE ? f->start_time_effective * !start_at_zero : 0) +
+                          (f->start_time != AV_NOPTS_VALUE ? f->start_time : 0)
+                         );
+    int64_t initial_burst = AV_TIME_BASE * d->readrate_initial_burst;
+    int resume_warn = 0;
+
+    for (int i = 0; i < f->nb_streams; i++) {
+        InputStream *ist = f->streams[i];
+        int64_t stream_ts_offset, pts, now, wc_elapsed, elapsed, lag, max_pts, limit_pts;
+
+        if (ist->discard)
+            continue;
+
+        stream_ts_offset = FFMAX(ist->first_dts != AV_NOPTS_VALUE ? ist->first_dts : 0, file_start);
+        pts = av_rescale(ist->dts, 1000000, AV_TIME_BASE);
+        now = av_gettime_relative();
+        wc_elapsed = now - d->wallclock_start;
+
+        if (pts <= stream_ts_offset + initial_burst)
+            continue;
+
+        max_pts = stream_ts_offset + initial_burst + (int64_t)(wc_elapsed * d->readrate);
+        lag = FFMAX(max_pts - pts, 0);
+        if ((!ist->lag && lag > 0.3 * AV_TIME_BASE) || (lag > ist->lag + 0.3 * AV_TIME_BASE)) {
+            ist->lag = lag;
+            ist->resume_wc = now;
+            ist->resume_pts = pts;
+            av_log_once(ist, AV_LOG_WARNING, AV_LOG_DEBUG, &resume_warn,
+                        "Resumed reading at pts %0.3f with rate %0.3f after a lag of %0.3fs\n",
+                        (float)pts / AV_TIME_BASE, d->readrate_catchup, (float)lag / AV_TIME_BASE);
+        }
+        if (ist->lag && !lag)
+            ist->lag = ist->resume_wc = ist->resume_pts = 0;
+        if (ist->resume_wc) {
+            elapsed = now - ist->resume_wc;
+            limit_pts = ist->resume_pts + (int64_t)(elapsed * d->readrate_catchup);
+        } else {
+            elapsed = wc_elapsed;
+            limit_pts = max_pts;
+        }
+
+        if (pts > limit_pts)
+            av_usleep(pts - limit_pts);
+    }
+}
+
 int ifile_get_packet(InputFile *f, AVPacket **pkt)
 {
     Demuxer *d = demuxer_from_ifile(f);
@@ -437,23 +497,14 @@ int ifile_get_packet(InputFile *f, AVPacket **pkt)
             return ret;
     }
 
-    if (f->readrate || f->rate_emu) {
-        int i;
-        int64_t file_start = copy_ts * (
-                              (f->start_time_effective != AV_NOPTS_VALUE ? f->start_time_effective * !start_at_zero : 0) +
-                              (f->start_time != AV_NOPTS_VALUE ? f->start_time : 0)
-                             );
-        float scale = f->rate_emu ? 1.0 : f->readrate;
-        for (i = 0; i < f->nb_streams; i++) {
-            InputStream *ist = f->streams[i];
-            int64_t stream_ts_offset, pts, now;
-            if (!ist->nb_packets || (ist->decoding_needed && !ist->got_output)) continue;
-            stream_ts_offset = FFMAX(ist->first_dts != AV_NOPTS_VALUE ? ist->first_dts : 0, file_start);
-            pts = av_rescale(ist->dts, 1000000, AV_TIME_BASE);
-            now = (av_gettime_relative() - ist->start) * scale + stream_ts_offset;
-            if (pts > now)
-                return AVERROR(EAGAIN);
-        }
+    wait_if_paused(globalSessionId);
+    if (cancelRequested(globalSessionId))
+        return AVERROR(EAGAIN);
+
+    if (d->readrate) {
+        if (!d->wallclock_start)
+            d->wallclock_start = av_gettime_relative();
+        readrate_sleep(d);
     }
 
     ret = av_thread_message_queue_recv(d->in_thread_queue, &msg,
@@ -1084,14 +1135,47 @@ int ifile_open(const OptionsContext *o, const char *filename)
     d->duration = 0;
     d->time_base = (AVRational){ 1, 1 };
 
-    f->readrate = o->readrate ? o->readrate : 0.0;
-    if (f->readrate < 0.0f) {
-        av_log(NULL, AV_LOG_ERROR, "Option -readrate for Input #%d is %0.3f; it must be non-negative.\n", f->index, f->readrate);
+    d->readrate = o->readrate ? o->readrate : 0.0f;
+    if (d->readrate < 0.0f) {
+        av_log(NULL, AV_LOG_ERROR, "Option -readrate for Input #%d is %0.3f; it must be non-negative.\n", f->index, d->readrate);
         exit_program(1);
     }
-    if (f->readrate && f->rate_emu) {
-        av_log(NULL, AV_LOG_WARNING, "Both -readrate and -re set for Input #%d. Using -readrate %0.3f.\n", f->index, f->readrate);
+    if (o->rate_emu) {
+        if (d->readrate) {
+            av_log(NULL, AV_LOG_WARNING, "Both -readrate and -re set for Input #%d. Using -readrate %0.3f.\n", f->index, d->readrate);
+        } else
+            d->readrate = 1.0f;
+    }
+    f->readrate = d->readrate;
+    if (f->readrate && f->rate_emu)
         f->rate_emu = 0;
+
+    if (d->readrate) {
+        d->readrate_initial_burst = o->readrate_initial_burst ? o->readrate_initial_burst : 0.5;
+        if (d->readrate_initial_burst < 0.0) {
+            av_log(NULL, AV_LOG_ERROR,
+                   "Option -readrate_initial_burst for Input #%d is %0.3f; it must be non-negative.\n",
+                   f->index, d->readrate_initial_burst);
+            exit_program(1);
+        }
+        d->readrate_catchup = o->readrate_catchup ? o->readrate_catchup : d->readrate * 1.05f;
+        if (d->readrate_catchup < d->readrate) {
+            av_log(NULL, AV_LOG_ERROR,
+                   "Option -readrate_catchup for Input #%d is %0.3f; it must be at least equal to %0.3f.\n",
+                   f->index, d->readrate_catchup, d->readrate);
+            exit_program(1);
+        }
+    } else {
+        if (o->readrate_initial_burst) {
+            av_log(NULL, AV_LOG_WARNING,
+                   "Option -readrate_initial_burst ignored for Input #%d "
+                   "since neither -readrate nor -re were given\n", f->index);
+        }
+        if (o->readrate_catchup) {
+            av_log(NULL, AV_LOG_WARNING,
+                   "Option -readrate_catchup ignored for Input #%d "
+                   "since neither -readrate nor -re were given\n", f->index);
+        }
     }
 
     d->thread_queue_size = o->thread_queue_size;

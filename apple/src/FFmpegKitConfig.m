@@ -17,6 +17,7 @@
  * along with FFmpegKit.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#import <pthread.h>
 #import <stdatomic.h>
 #import <sys/types.h>
 #import <sys/stat.h>
@@ -56,8 +57,14 @@ static NSRecursiveLock* sessionHistoryLock;
 
 /** Session control variables */
 #define SESSION_MAP_SIZE 1000
+#define SESSION_STATE_IDLE    0
+#define SESSION_STATE_RUNNING 1
+#define SESSION_STATE_CANCEL  2
+#define SESSION_STATE_PAUSED  3
 static atomic_short sessionMap[SESSION_MAP_SIZE];
 static atomic_int sessionInTransitMessageCountMap[SESSION_MAP_SIZE];
+static pthread_mutex_t sessionControlMutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  sessionControlCond  = PTHREAD_COND_INITIALIZER;
 
 static dispatch_queue_t asyncDispatchQueue;
 
@@ -379,8 +386,15 @@ CallbackData *callbackDataRemove() {
  *
  * @param sessionId session id
  */
+static void sessionControlBroadcast(void)
+{
+    pthread_mutex_lock(&sessionControlMutex);
+    pthread_cond_broadcast(&sessionControlCond);
+    pthread_mutex_unlock(&sessionControlMutex);
+}
+
 void registerSessionId(long sessionId) {
-    atomic_store(&sessionMap[sessionId % SESSION_MAP_SIZE], 1);
+    atomic_store(&sessionMap[sessionId % SESSION_MAP_SIZE], SESSION_STATE_RUNNING);
 }
 
 /**
@@ -389,7 +403,8 @@ void registerSessionId(long sessionId) {
  * @param sessionId session id
  */
 void removeSession(long sessionId) {
-    atomic_store(&sessionMap[sessionId % SESSION_MAP_SIZE], 0);
+    atomic_store(&sessionMap[sessionId % SESSION_MAP_SIZE], SESSION_STATE_IDLE);
+    sessionControlBroadcast();
 }
 
 /**
@@ -398,7 +413,34 @@ void removeSession(long sessionId) {
  * @param sessionId session id
  */
 void cancelSession(long sessionId) {
-    atomic_store(&sessionMap[sessionId % SESSION_MAP_SIZE], 2);
+    atomic_store(&sessionMap[sessionId % SESSION_MAP_SIZE], SESSION_STATE_CANCEL);
+    sessionControlBroadcast();
+}
+
+/**
+ * Pauses the session specified with sessionId.
+ *
+ * @param sessionId session id
+ */
+void pauseSession(long sessionId) {
+    atomic_short *slot = &sessionMap[sessionId % SESSION_MAP_SIZE];
+    if (atomic_load(slot) != SESSION_STATE_RUNNING)
+        return;
+    atomic_store(slot, SESSION_STATE_PAUSED);
+    sessionControlBroadcast();
+}
+
+/**
+ * Resumes a paused session.
+ *
+ * @param sessionId session id
+ */
+void resumeSession(long sessionId) {
+    atomic_short *slot = &sessionMap[sessionId % SESSION_MAP_SIZE];
+    if (atomic_load(slot) != SESSION_STATE_PAUSED)
+        return;
+    atomic_store(slot, SESSION_STATE_RUNNING);
+    sessionControlBroadcast();
 }
 
 /**
@@ -408,11 +450,30 @@ void cancelSession(long sessionId) {
  * @return 1 if exists, false otherwise
  */
 int cancelRequested(long sessionId) {
-    if (atomic_load(&sessionMap[sessionId % SESSION_MAP_SIZE]) == 2) {
-        return 1;
-    } else {
-        return 0;
-    }
+    return atomic_load(&sessionMap[sessionId % SESSION_MAP_SIZE]) == SESSION_STATE_CANCEL;
+}
+
+/**
+ * Checks whether the given session id is paused.
+ *
+ * @param sessionId session id
+ * @return 1 if paused, false otherwise
+ */
+int pauseRequested(long sessionId) {
+    return atomic_load(&sessionMap[sessionId % SESSION_MAP_SIZE]) == SESSION_STATE_PAUSED;
+}
+
+/**
+ * Blocks the calling thread while the session is paused.
+ * Wakes on resume or cancel. No timeout is applied.
+ *
+ * @param sessionId session id
+ */
+void wait_if_paused(long sessionId) {
+    pthread_mutex_lock(&sessionControlMutex);
+    while (pauseRequested(sessionId) && !cancelRequested(sessionId))
+        pthread_cond_wait(&sessionControlCond, &sessionControlMutex);
+    pthread_mutex_unlock(&sessionControlMutex);
 }
 
 /**

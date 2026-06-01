@@ -189,6 +189,32 @@
 + (void)cancel:(long)sessionId;
 
 /**
+ * <p>Pauses the session specified with <code>sessionId</code>.
+ *
+ * <p>The session keeps its encoder, muxer, and open output state. Transcoding
+ * blocks until resume is called or the session is cancelled.
+ * There is no timeout; the session can remain paused indefinitely.
+ *
+ * @param sessionId id of the session that will be paused
+ */
++ (void)pause:(long)sessionId;
+
+/**
+ * <p>Resumes a paused session specified with <code>sessionId</code>.
+ *
+ * @param sessionId id of the session that will be resumed
+ */
++ (void)resume:(long)sessionId;
+
+/**
+ * <p>Returns whether the session specified with <code>sessionId</code> is paused.
+ *
+ * @param sessionId id of the session
+ * @return true if paused, false otherwise
+ */
++ (BOOL)isPaused:(long)sessionId;
+
+/**
  * <p>Lists all FFmpeg sessions in the session history.
  *
  * @return all FFmpeg sessions in the session history

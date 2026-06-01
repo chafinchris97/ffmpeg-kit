@@ -250,6 +250,21 @@
  */
 - (void)cancel;
 
+/**
+ * Pauses running the session without tearing down encoder or muxer state.
+ */
+- (void)pause;
+
+/**
+ * Resumes a paused session.
+ */
+- (void)resume;
+
+/**
+ * Returns whether this session is paused.
+ */
+- (BOOL)isPaused;
+
 @end
 
 #endif // FFMPEG_KIT_SESSION_H

@@ -107,6 +107,18 @@
     cancel_operation(sessionId);
 }
 
++ (void)pause:(long)sessionId {
+    pause_operation(sessionId);
+}
+
++ (void)resume:(long)sessionId {
+    resume_operation(sessionId);
+}
+
++ (BOOL)isPaused:(long)sessionId {
+    return pauseRequested(sessionId) != 0;
+}
+
 + (NSArray*)listSessions {
     return [FFmpegKitConfig getFFmpegSessions];
 }

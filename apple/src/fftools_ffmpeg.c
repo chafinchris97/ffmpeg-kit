@@ -293,6 +293,10 @@ extern volatile int handleSIGPIPE;
 extern __thread long globalSessionId;
 extern void cancelSession(long sessionId);
 extern int cancelRequested(long sessionId);
+extern void pauseSession(long sessionId);
+extern void resumeSession(long sessionId);
+extern int pauseRequested(long sessionId);
+extern void wait_if_paused(long sessionId);
 
 /* sub2video hack:
    Convert subtitles to video with alpha to insert them in filter graphs.
@@ -4256,6 +4260,10 @@ static int transcode(void)
     while (!received_sigterm && !cancelRequested(globalSessionId)) {
         int64_t cur_time= av_gettime_relative();
 
+        wait_if_paused(globalSessionId);
+        if (cancelRequested(globalSessionId))
+            break;
+
         /* if 'q' pressed, exits */
         if (stdin_interaction)
             if (check_keyboard_interaction(cur_time) < 0)
@@ -4420,6 +4428,18 @@ void cancel_operation(long id)
     }
 }
 
+void pause_operation(long id)
+{
+    if (id != 0)
+        pauseSession(id);
+}
+
+void resume_operation(long id)
+{
+    if (id != 0)
+        resumeSession(id);
+}
+
 __thread OptionDef *ffmpeg_options = NULL;
 
 int ffmpeg_execute(int argc, char **argv)
@@ -4564,6 +4584,12 @@ int ffmpeg_execute(int argc, char **argv)
         { "readrate",       HAS_ARG | OPT_FLOAT | OPT_OFFSET |
                             OPT_EXPERT | OPT_INPUT,                      { .off = OFFSET(readrate) },
             "read input at specified rate", "speed" },
+        { "readrate_initial_burst", HAS_ARG | OPT_DOUBLE | OPT_OFFSET |
+                            OPT_EXPERT | OPT_INPUT,                      { .off = OFFSET(readrate_initial_burst) },
+            "The initial amount of input to burst read before imposing any readrate", "seconds" },
+        { "readrate_catchup", HAS_ARG | OPT_FLOAT | OPT_OFFSET |
+                            OPT_EXPERT | OPT_INPUT,                      { .off = OFFSET(readrate_catchup) },
+            "Temporary readrate used to catch up if an input lags behind the specified readrate", "speed" },
         { "target",         HAS_ARG | OPT_PERFILE | OPT_OUTPUT,          { .func_arg = opt_target },
             "specify target file type (\"vcd\", \"svcd\", \"dvd\", \"dv\" or \"dv50\" "
             "with optional prefixes \"pal-\", \"ntsc-\" or \"film-\")", "type" },
